@@ -49,7 +49,12 @@ def test_guardar_no_sobrescribe(tmp_path):
 
 
 def test_estado_en_carpeta(tmp_path):
-    t0 = time.time()
+    import os
+    t0 = time.time() - 10
+    orig = tmp_path / "original_firmado_abogado.pdf"
+    orig.write_bytes(b"%PDF /Type /Sig /ByteRange [0 1 2 3]")
+    os.utime(orig, (t0, t0))  # guardado al archivar
+    assert estado_en_carpeta(tmp_path, t0) == ""  # la firma del abogado no cuenta
     (tmp_path / "escrito.pdf").write_bytes(b"%PDF sin firmar")
     assert estado_en_carpeta(tmp_path, t0) == ""
     (tmp_path / "escrito_firmado.pdf").write_bytes(b"%PDF /Type /Sig /ByteRange [0 1 2 3]")

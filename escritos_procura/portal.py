@@ -101,19 +101,9 @@ class SesionPortal:
         except ImportError:
             self.avisar("error", "Falta el componente del navegador (playwright).")
             return
-        perfil = carpeta_datos() / "navegador"
         try:
             with sync_playwright() as pw:
-                opciones = dict(headless=self.sin_ventana, no_viewport=True, accept_downloads=True,
-                                args=["--start-maximized"])
-                ejecutable = self.ejecutable
-                if not ejecutable and self.canal:
-                    ejecutable, _ = buscar_navegador()
-                if ejecutable:
-                    opciones["executable_path"] = ejecutable
-                elif self.canal:
-                    opciones["channel"] = self.canal
-                ctx = pw.chromium.launch_persistent_context(str(perfil), **opciones)
+                ctx = self._abrir_navegador(pw)
                 ctx.set_default_timeout(20_000)
                 pagina = ctx.pages[0] if ctx.pages else ctx.new_page()
                 for pg in ctx.pages:
@@ -140,6 +130,51 @@ class SesionPortal:
             if not buscar_navegador()[0]:
                 msg = "No encuentro Microsoft Edge ni Google Chrome en este ordenador."
             self.avisar("error", f"No se ha podido abrir el navegador: {msg}")
+
+    def _intentos(self):
+        """Formas de abrir el navegador, de la mejor a la más sencilla."""
+        perfil = carpeta_datos() / "navegador"
+        base = dict(headless=self.sin_ventana, no_viewport=True, accept_downloads=True,
+                    args=["--start-maximized", "--no-first-run", "--no-default-browser-check"])
+        if self.ejecutable:
+            yield "navegador indicado", "persistente", perfil, {**base, "executable_path": self.ejecutable}
+            return
+        ruta, nombre = buscar_navegador()
+        if ruta:
+            yield nombre, "persistente", perfil, {**base, "executable_path": ruta}
+        for canal, nombre in (("msedge", "Microsoft Edge"), ("chrome", "Google Chrome")):
+            yield nombre + f" ({canal})", "persistente", perfil, {**base, "channel": canal}
+        # Perfil nuevo por si el anterior quedó bloqueado o dañado
+        perfil2 = carpeta_datos() / "navegador2"
+        if ruta:
+            yield nombre + " (perfil nuevo)", "persistente", perfil2, {**base, "executable_path": ruta}
+        # Sin perfil propio: no recuerda la sesión, pero suele abrir siempre
+        for canal in ("msedge", "chrome"):
+            yield f"{canal} sin perfil", "normal", None, {k: v for k, v in {**base, "channel": canal}.items()
+                                                          if k not in ("no_viewport", "accept_downloads")}
+
+    def _abrir_navegador(self, pw):
+        errores = []
+        for nombre, modo, perfil, opciones in self._intentos():
+            try:
+                if modo == "persistente":
+                    perfil.mkdir(parents=True, exist_ok=True)
+                    for bloqueo in ("SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"):
+                        try:
+                            (perfil / bloqueo).unlink()
+                        except OSError:
+                            pass
+                    return pw.chromium.launch_persistent_context(str(perfil), **opciones)
+                navegador = pw.chromium.launch(**opciones)
+                return navegador.new_context(no_viewport=True, accept_downloads=True)
+            except Exception as ex:
+                errores.append(f"[{nombre}] {ex}")
+        try:
+            (carpeta_datos() / "error_navegador.txt").write_text("\n\n".join(errores), encoding="utf-8")
+        except OSError:
+            pass
+        primero = errores[0].splitlines()[0] if errores else "sin detalles"
+        raise RuntimeError(f"{primero[:250]} (detalles en {carpeta_datos() / 'error_navegador.txt'})")
 
     def _descarga(self, d):
         """Lo que se descarga del portal va a la carpeta del procedimiento.

@@ -164,14 +164,17 @@ def categoria_anexo(nombre: str, texto: str) -> tuple[str, str]:
     return titulo, "Documental"
 
 
-def ultimo_firmado(carpeta: Path, principal: str) -> Path | None:
-    """El PDF firmado más reciente de la carpeta (normalmente el escrito una vez firmado)."""
+def ultimo_firmado(carpeta: Path, principal: str, desde_ts: float = 0) -> Path | None:
+    """El PDF firmado más reciente de la carpeta, guardado después de archivar el escrito
+    (la firma del abogado que ya traía el original no cuenta)."""
     candidatos = []
     for f in carpeta.glob("*.pdf"):
         n = normalizar(f.name)
         if n.startswith(("RESGUARDO", "DOC", "ANEXO", "PODER")):
             continue
         try:
+            if f.stat().st_mtime <= desde_ts + 2:
+                continue
             if pdf_firmado(f.read_bytes()):
                 candidatos.append(f)
         except OSError:
@@ -220,12 +223,13 @@ def preparar(escrito, ajustes) -> FichaPortal:
     f.procurador_colegiado = getattr(ajustes, "procurador_colegiado", "")
 
     f.titulo = (escrito.tipo_escrito or "Escrito").upper()
-    firmado = ultimo_firmado(carpeta, escrito.principal)
+    firmado = ultimo_firmado(carpeta, escrito.principal, escrito.recibido_ts)
     f.documento = firmado or principal
     f.documento_firmado = firmado is not None
     if not firmado:
-        f.avisos.append("El escrito aún no está firmado: fírmalo y vuelve a pulsar Presentar, "
-                        "o súbelo tú en Documentación.")
+        f.avisos.append("El escrito aún no está firmado por ti: fírmalo en Adobe (Utilizar un certificado → "
+                        "Firmar digitalmente), guárdalo en la carpeta y vuelve a pulsar Presentar. "
+                        "Si sigues ahora, súbelo tú en Documentación.")
 
     if poder:
         f.anexos.append(Anexo(poder, "PODER NOTARIAL", "Poder"))

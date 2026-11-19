@@ -373,7 +373,9 @@ def estado_en_carpeta(carpeta: Path, desde_ts: float, principal: str = "") -> st
             continue
         if normalizar(f.name).startswith("RESGUARDO") and mt >= desde_ts - 60:
             return "Presentado"
-        if f.suffix.lower() == ".pdf" and mt >= desde_ts - 60 and not normalizar(f.name).startswith(("DOC", "ANEXO")):
+        # Firmado = un PDF guardado DESPUÉS de archivar (al firmarlo). La firma del
+        # abogado que ya traía el PDF original no cuenta.
+        if f.suffix.lower() == ".pdf" and mt > desde_ts + 2 and not normalizar(f.name).startswith(("DOC", "ANEXO")):
             try:
                 with open(f, "rb") as fh:
                     if pdf_firmado(fh.read()):
