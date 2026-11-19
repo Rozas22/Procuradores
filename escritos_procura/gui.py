@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 import struct
 import sys
 import tempfile
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QToolBar, QVBoxLayout, QWidget,
 )
 
-from . import __version__, actualizador
+from . import __version__, actualizador, portal
 from .almacen import APP_NOMBRE, ESTADOS, PORTALES, Ajustes, Almacen, Escrito
 from .motor import (FORMATOS_CARPETA, TIPOS_ESCRITO, Datos, Entrada, analizar,
                     leer_archivos, nombre_carpeta)
@@ -374,9 +375,11 @@ class PanelDetalle(QFrame):
         b_esc.clicked.connect(lambda: self.e and abrir(Path(self.e.carpeta) / self.e.principal))
         b_carp = QPushButton("Abrir carpeta")
         b_carp.clicked.connect(lambda: self.e and abrir(self.e.carpeta))
-        self.b_portal = QPushButton("Ir al portal")
+        self.b_portal = QPushButton("Presentar en el portal")
         self.b_portal.setObjectName("primario")
-        self.b_portal.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self.v.ajustes.portal_url)))
+        self.b_portal.setToolTip("Abre el portal, espera a que inicies sesión y te lleva hasta el escrito. "
+                                 "El envío lo haces tú.")
+        self.b_portal.clicked.connect(lambda: self.e and self.v.presentar(self.e))
         b_quitar = QPushButton("Quitar de la lista")
         b_quitar.setToolTip("No borra ningún archivo")
         b_quitar.clicked.connect(self._quitar)
@@ -405,6 +408,7 @@ class PanelDetalle(QFrame):
         self.avisos.setVisible(bool(e.avisos))
         self.estado.setCurrentText(e.estado)
         self.b_portal.setEnabled(bool(self.v.ajustes.portal_url))
+        self.b_portal.setText("Presentar en el portal" if self.v.es_justizia() else "Ir al portal")
 
     def _estado_manual(self):
         if self.e:
@@ -426,6 +430,7 @@ class _Senales(QObject):
     resultado = Signal(object, bool, str)
     progreso = Signal(int, int)
     descargado = Signal(str, str)
+    portal = Signal(str, str)
 
 
 class Ventana(QMainWindow):
@@ -465,6 +470,7 @@ class Ventana(QMainWindow):
         self._senales.resultado.connect(self._resultado_busqueda)
         self._senales.progreso.connect(self._progreso_descarga)
         self._senales.descargado.connect(self._descargado)
+        self._senales.portal.connect(self._aviso_portal)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -472,6 +478,11 @@ class Ventana(QMainWindow):
         lay.setContentsMargins(16, 12, 16, 12)
         self.zona = ZonaSoltar(self.elegir_archivos)
         lay.addWidget(self.zona)
+        self.banner = QLabel()
+        self.banner.setWordWrap(True)
+        self.banner.setVisible(False)
+        lay.addWidget(self.banner)
+        self.sesion_portal = None
 
         cab = QHBoxLayout()
         t = QLabel("Escritos")
@@ -628,6 +639,41 @@ class Ventana(QMainWindow):
         if n or avisar:
             self.recargar()
             self.statusBar().showMessage(f"Estados actualizados ({n} cambios)", 4000)
+
+    # --- portal -------------------------------------------------------------
+    def es_justizia(self) -> bool:
+        return "justizia" in (self.ajustes.portal_nombre + self.ajustes.portal_url).lower()
+
+    def presentar(self, e: Escrito):
+        if not self.es_justizia():
+            QDesktopServices.openUrl(QUrl(self.ajustes.portal_url))
+            return
+        m = re.search(r"(\d+)\s*/\s*(\d{4})", e.procedimiento)
+        if not m:
+            QMessageBox.warning(self, APP_NOMBRE, "Este escrito no tiene número de procedimiento.")
+            return
+        archivos = [Path(e.carpeta) / n for n in ([e.principal] if e.principal else []) + e.anexos]
+        if self.sesion_portal is None:
+            self.sesion_portal = portal.SesionPortal(lambda n, t: self._senales.portal.emit(n, t))
+        self.sesion_portal.presentar(portal.Trabajo(e.tipo_escrito, m.group(1), m.group(2), archivos))
+
+    def _aviso_portal(self, nivel: str, texto: str):
+        colores = {"info": ("#1e3a8a", "#eff6ff", "#bfdbfe"), "login": ("#92400e", "#fffbeb", "#fcd34d"),
+                   "listo": ("#166534", "#f0fdf4", "#86efac"), "error": ("#991b1b", "#fef2f2", "#fca5a5")}
+        fg, bg, bd = colores.get(nivel, colores["info"])
+        icono = {"login": "🔐 ", "listo": "✅ ", "error": "⚠ "}.get(nivel, "")
+        self.banner.setStyleSheet(f"color:{fg};background:{bg};border:1px solid {bd};border-radius:8px;padding:8px 12px;font-size:13px;")
+        self.banner.setText(icono + texto)
+        self.banner.setVisible(True)
+        if nivel == "error":
+            self.sesion_portal = None
+        if nivel == "listo":
+            QTimer.singleShot(30_000, lambda: self.banner.text().endswith(texto) and self.banner.setVisible(False))
+
+    def closeEvent(self, ev):
+        if self.sesion_portal:
+            self.sesion_portal.cerrar()
+        super().closeEvent(ev)
 
     # --- actualizaciones ------------------------------------------------------
     def buscar_actualizacion(self, manual=False):

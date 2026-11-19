@@ -19,7 +19,7 @@ def carpeta_datos() -> Path:
 
 
 PORTALES = {
-    "Justizia.eus (País Vasco)": "https://egoitza.justizia.eus/psp-euskadi-es/webjus01-contentgen/es/",
+    "Justizia.eus (País Vasco)": "https://psp.justizia.eus/PSP/app/index.html#/",
     "LexNET": "https://lexnet.justicia.es/",
     "Otro": "",
 }
