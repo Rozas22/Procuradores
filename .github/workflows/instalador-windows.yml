@@ -2,8 +2,6 @@ name: Instalador de Windows
 on:
   push:
     branches: [main]
-  release:
-    types: [published]
   workflow_dispatch:
 permissions:
   contents: write
@@ -31,9 +29,16 @@ jobs:
         with:
           name: EscritosProcura-Instalador
           path: dist/EscritosProcura-Instalador-*.exe
-      - name: Adjuntar instalador a la versión
-        if: github.event_name == 'release'
+      - name: Publicar la versión si es nueva
+        if: github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" (Get-Item dist/EscritosProcura-Instalador-*.exe).FullName --clobber
+        run: |
+          $tag = "v${{ steps.version.outputs.v }}"
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) { "La versión $tag ya estaba publicada"; exit 0 }
+          $exe = (Get-Item dist/EscritosProcura-Instalador-*.exe).FullName
+          $args = @($tag, $exe, "--target", "${{ github.sha }}", "--title", "Escritos Procura ${{ steps.version.outputs.v }}")
+          if (Test-Path "notas/$tag.md") { $args += @("--notes-file", "notas/$tag.md") } else { $args += "--generate-notes" }
+          gh release create @args

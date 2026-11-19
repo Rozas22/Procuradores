@@ -35,7 +35,7 @@ python -m pytest tests          # pruebas (con datos inventados)
 
 ## Actualizaciones
 
-La app busca versiones nuevas al abrirse y muestra un botón verde "Actualizar". Para publicar una versión: sube `__version__` en `escritos_procura/__init__.py`, añade `notas/vX.Y.Z.md` con las novedades y publica una Release `vX.Y.Z` en GitHub. Actions genera el instalador y lo adjunta a esa Release.
+La app busca versiones nuevas al abrirse y muestra un botón verde "Actualizar". Para publicar una versión: sube `__version__` en `escritos_procura/__init__.py`, añade `notas/vX.Y.Z.md` con las novedades y sube el cambio a `main`. Actions genera el instalador y, si esa versión no estaba publicada, crea la Release `vX.Y.Z` con el instalador.
 
 ## Próximos pasos
 
