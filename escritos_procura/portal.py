@@ -32,6 +32,25 @@ RUTA_MENU = {
 }
 
 
+def buscar_navegador() -> tuple[str | None, str]:
+    """Ruta de Edge o Chrome instalados (y su nombre). En Windows, Edge viene siempre."""
+    import shutil
+    pf = [os.environ.get(v) for v in ("PROGRAMFILES(X86)", "PROGRAMFILES", "LOCALAPPDATA")]
+    candidatos = []
+    for base in filter(None, pf):
+        candidatos += [(Path(base) / "Microsoft/Edge/Application/msedge.exe", "Microsoft Edge"),
+                       (Path(base) / "Google/Chrome/Application/chrome.exe", "Google Chrome")]
+    for ruta, nombre in candidatos:
+        if ruta.is_file():
+            return str(ruta), nombre
+    for exe, nombre in (("msedge", "Microsoft Edge"), ("chrome", "Google Chrome"),
+                        ("google-chrome", "Google Chrome"), ("chromium", "Chromium")):
+        r = shutil.which(exe)
+        if r:
+            return r, nombre
+    return None, ""
+
+
 def ruta_para(tipo_escrito: str) -> str:
     """'buscar' para escritos de trámite; si no, el texto de la opción del Menú."""
     return RUTA_MENU.get(tipo_escrito, "buscar")
@@ -87,8 +106,11 @@ class SesionPortal:
             with sync_playwright() as pw:
                 opciones = dict(headless=self.sin_ventana, no_viewport=True, accept_downloads=True,
                                 args=["--start-maximized"])
-                if self.ejecutable:
-                    opciones["executable_path"] = self.ejecutable
+                ejecutable = self.ejecutable
+                if not ejecutable and self.canal:
+                    ejecutable, _ = buscar_navegador()
+                if ejecutable:
+                    opciones["executable_path"] = ejecutable
                 elif self.canal:
                     opciones["channel"] = self.canal
                 ctx = pw.chromium.launch_persistent_context(str(perfil), **opciones)
@@ -114,9 +136,9 @@ class SesionPortal:
                                                  "Puedes continuar a mano en la ventana del navegador.")
                 ctx.close()
         except Exception as ex:
-            msg = str(ex)
-            if "msedge" in msg.lower() or "executable" in msg.lower():
-                msg = "No encuentro Microsoft Edge en este ordenador."
+            msg = str(ex).strip().splitlines()[0][:300] if str(ex).strip() else type(ex).__name__
+            if not buscar_navegador()[0]:
+                msg = "No encuentro Microsoft Edge ni Google Chrome en este ordenador."
             self.avisar("error", f"No se ha podido abrir el navegador: {msg}")
 
     def _descarga(self, d):
