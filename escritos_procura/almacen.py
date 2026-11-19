@@ -35,6 +35,7 @@ class Ajustes:
     revisar_siempre: bool = False
     procurador_nombre: str = ""
     procurador_colegiado: str = ""
+    certificado_nombre: str = ""     # CN del certificado con el que se firma
 
     @property
     def configurado(self) -> bool:

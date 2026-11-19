@@ -13,12 +13,12 @@ from PySide6.QtCore import QMimeData, QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QGuiApplication, QIcon, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+    QFileDialog, QFormLayout, QInputDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QMainWindow, QMessageBox, QProgressDialog, QPushButton, QSizePolicy, QSplitter,
     QTableWidget, QTableWidgetItem, QToolBar, QVBoxLayout, QWidget,
 )
 
-from . import __version__, actualizador, portal
+from . import __version__, actualizador, firma, portal
 from .almacen import APP_NOMBRE, ESTADOS, PORTALES, Ajustes, Almacen, Escrito
 from .motor import (FORMATOS_CARPETA, TIPOS_ESCRITO, Datos, Entrada, analizar,
                     leer_archivos, nombre_carpeta)
@@ -149,6 +149,15 @@ class DialogoAjustes(QDialog):
         self.proc_col.setMaximumWidth(160)
         form.addRow("Procurador/a", self.proc_nombre)
         form.addRow("Nº colegiado/a", self.proc_col)
+        fila_c = QHBoxLayout()
+        self.cert = QLabel(ajustes.certificado_nombre or "Se elige la primera vez que firmes")
+        self.cert.setObjectName("sub")
+        b_cert = QPushButton("Cambiar")
+        b_cert.clicked.connect(lambda: (self.cert.setText("Se elige la próxima vez que firmes"),
+                                        setattr(self, "_olvidar_cert", True)))
+        fila_c.addWidget(self.cert, 1)
+        fila_c.addWidget(b_cert)
+        form.addRow("Certificado de firma", fila_c)
 
         self.ficha = QCheckBox("Guardar también una ficha .txt con los datos en la carpeta")
         self.ficha.setChecked(ajustes.escribir_ficha)
@@ -197,6 +206,8 @@ class DialogoAjustes(QDialog):
         self.a.revisar_siempre = self.revisar.isChecked()
         self.a.procurador_nombre = self.proc_nombre.text().strip()
         self.a.procurador_colegiado = self.proc_col.text().strip()
+        if getattr(self, "_olvidar_cert", False):
+            self.a.certificado_nombre = ""
         self.a.guardar()
         self.accept()
 
@@ -389,13 +400,17 @@ class PanelDetalle(QFrame):
         self.b_portal.setToolTip("Abre el portal, espera a que inicies sesión y te lleva hasta el escrito. "
                                  "El envío lo haces tú.")
         self.b_portal.clicked.connect(lambda: self.e and self.v.presentar(self.e))
+        self.b_firmar = QPushButton("Firmar con mi certificado")
+        self.b_firmar.setToolTip("Añade tu firma (con AutoFirma) junto a la del abogado y guarda el PDF firmado en la carpeta")
+        self.b_firmar.clicked.connect(lambda: self.e and self.v.firmar(self.e))
         b_quitar = QPushButton("Quitar de la lista")
         b_quitar.setToolTip("No borra ningún archivo")
         b_quitar.clicked.connect(self._quitar)
         botones.addWidget(b_esc, 0, 0)
         botones.addWidget(b_carp, 0, 1)
-        botones.addWidget(self.b_portal, 1, 0, 1, 2)
-        botones.addWidget(b_quitar, 2, 0, 1, 2)
+        botones.addWidget(self.b_firmar, 1, 0, 1, 2)
+        botones.addWidget(self.b_portal, 2, 0, 1, 2)
+        botones.addWidget(b_quitar, 3, 0, 1, 2)
         cl.addLayout(botones)
         cl.addStretch(1)
         lay.addWidget(self.cuerpo)
@@ -440,6 +455,7 @@ class _Senales(QObject):
     progreso = Signal(int, int)
     descargado = Signal(str, str)
     portal = Signal(str, str)
+    firmado = Signal(str, str)
 
 
 class Ventana(QMainWindow):
@@ -480,6 +496,7 @@ class Ventana(QMainWindow):
         self._senales.progreso.connect(self._progreso_descarga)
         self._senales.descargado.connect(self._descargado)
         self._senales.portal.connect(self._aviso_portal)
+        self._senales.firmado.connect(self._firmado)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -648,6 +665,76 @@ class Ventana(QMainWindow):
         if n or avisar:
             self.recargar()
             self.statusBar().showMessage(f"Estados actualizados ({n} cambios)", 4000)
+
+    # --- firma --------------------------------------------------------------
+    def _elegir_certificado(self) -> firma.Certificado | None | bool:
+        """Certificado guardado o elegido ahora. None = elegir en AutoFirma; False = cancelar."""
+        try:
+            certs = firma.listar_certificados()
+        except Exception:
+            certs = []
+        guardado = next((c for c in certs if c.nombre == self.ajustes.certificado_nombre), None)
+        if guardado:
+            return guardado
+        if not certs:
+            return None
+        opciones = [c.texto for c in certs] + ["Elegirlo en la ventana de AutoFirma"]
+        texto, ok = QInputDialog.getItem(self, APP_NOMBRE, "¿Con qué certificado firmas?\n"
+                                         "(la app lo recordará; puedes cambiarlo en Ajustes)", opciones, 0, False)
+        if not ok:
+            return False
+        if texto == opciones[-1]:
+            return None
+        c = certs[opciones.index(texto)]
+        self.ajustes.certificado_nombre = c.nombre
+        self.ajustes.guardar()
+        return c
+
+    def firmar(self, e: Escrito):
+        exe = firma.buscar_autofirma()
+        if not exe:
+            r = QMessageBox.question(self, APP_NOMBRE, "Para firmar desde la app hace falta AutoFirma, la aplicación "
+                                     "gratuita del Gobierno para firmar con certificado.\n\n¿Abro la página de descarga?")
+            if r == QMessageBox.Yes:
+                QDesktopServices.openUrl(QUrl(firma.URL_AUTOFIRMA))
+            return
+        pdf = Path(e.carpeta) / e.principal
+        if not pdf.is_file():
+            QMessageBox.warning(self, APP_NOMBRE, f"No encuentro el escrito en la carpeta:\n{pdf}")
+            return
+        cert = self._elegir_certificado()
+        if cert is False:
+            return
+        try:
+            pagina, _, junto = firma.posicion_firma(pdf)
+        except Exception:
+            pagina, junto = 0, False
+        donde = (f"en la página {pagina}, junto a la firma que ya tiene" if junto else f"al final de la página {pagina}") if pagina else ""
+        quien = cert.nombre if cert else "el certificado que elijas en AutoFirma"
+        r = QMessageBox.question(self, APP_NOMBRE,
+                                 f"Vas a firmar:\n  {pdf.name}\n\ncon el certificado de:\n  {quien}\n\n"
+                                 f"La firma será visible {donde}. Se guarda una copia firmada en la misma carpeta; "
+                                 "el original no se toca.\n\n¿Firmar?")
+        if r != QMessageBox.Yes:
+            return
+        self._aviso_portal("info", "Firmando con AutoFirma… (si Windows pide la contraseña del certificado, escríbela)")
+
+        def tarea():
+            try:
+                ruta = firma.firmar(pdf, cert if cert else None, exe, elegir_en_autofirma=cert is None)
+                self._senales.firmado.emit(str(ruta), "")
+            except Exception as ex:
+                self._senales.firmado.emit("", str(ex))
+        threading.Thread(target=tarea, daemon=True).start()
+
+    def _firmado(self, ruta: str, error: str):
+        if error:
+            self._aviso_portal("error", f"No se ha podido firmar: {error}\nPuedes firmarlo en Adobe como siempre; "
+                                        "la app lo detectará igual.")
+            return
+        self._aviso_portal("listo", f"Firmado. Guardado como «{Path(ruta).name}». Ya puedes presentarlo.")
+        self.refrescar(avisar=False)
+        self.recargar()
 
     # --- portal -------------------------------------------------------------
     def es_justizia(self) -> bool:
