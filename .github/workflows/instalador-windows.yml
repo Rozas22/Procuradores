@@ -2,7 +2,8 @@ name: Instalador de Windows
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
 permissions:
   contents: write
@@ -21,7 +22,7 @@ jobs:
         shell: pwsh
         run: |
           $v = (Select-String -Path escritos_procura/__init__.py -Pattern '"(.+)"').Matches[0].Groups[1].Value
-          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$v") { throw "La etiqueta $env:GITHUB_REF_NAME no coincide con la versión $v" }
+          if ("${{ github.event_name }}" -eq "release" -and "${{ github.event.release.tag_name }}" -ne "v$v") { throw "La etiqueta $env:GITHUB_REF_NAME no coincide con la versión $v" }
           "v=$v" >> $env:GITHUB_OUTPUT
       - run: pyinstaller --noconfirm EscritosProcura.spec
       - run: choco install innosetup -y --no-progress
@@ -30,12 +31,9 @@ jobs:
         with:
           name: EscritosProcura-Instalador
           path: dist/EscritosProcura-Instalador-*.exe
-      - name: Publicar versión
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Adjuntar instalador a la versión
+        if: github.event_name == 'release'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          $notas = if (Test-Path "notas/${{ github.ref_name }}.md") { "notas/${{ github.ref_name }}.md" } else { $null }
-          if ($notas) { gh release create "${{ github.ref_name }}" dist/EscritosProcura-Instalador-*.exe --title "Escritos Procura ${{ steps.version.outputs.v }}" --notes-file $notas }
-          else { gh release create "${{ github.ref_name }}" dist/EscritosProcura-Instalador-*.exe --title "Escritos Procura ${{ steps.version.outputs.v }}" --generate-notes }
+        run: gh release upload "${{ github.event.release.tag_name }}" (Get-Item dist/EscritosProcura-Instalador-*.exe).FullName --clobber
