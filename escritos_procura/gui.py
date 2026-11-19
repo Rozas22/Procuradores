@@ -142,6 +142,13 @@ class DialogoAjustes(QDialog):
         self.portal.currentTextChanged.connect(lambda n: self.portal_url.setText(PORTALES.get(n, "")) if PORTALES.get(n) else None)
         form.addRow("Portal donde presentas", self.portal)
         form.addRow("Dirección del portal", self.portal_url)
+        self.proc_nombre = QLineEdit(ajustes.procurador_nombre)
+        self.proc_nombre.setPlaceholderText("Nombre y apellidos del procurador/a que presenta")
+        self.proc_col = QLineEdit(ajustes.procurador_colegiado)
+        self.proc_col.setPlaceholderText("Nº de colegiado/a")
+        self.proc_col.setMaximumWidth(160)
+        form.addRow("Procurador/a", self.proc_nombre)
+        form.addRow("Nº colegiado/a", self.proc_col)
 
         self.ficha = QCheckBox("Guardar también una ficha .txt con los datos en la carpeta")
         self.ficha.setChecked(ajustes.escribir_ficha)
@@ -188,6 +195,8 @@ class DialogoAjustes(QDialog):
         self.a.portal_url = self.portal_url.text().strip()
         self.a.escribir_ficha = self.ficha.isChecked()
         self.a.revisar_siempre = self.revisar.isChecked()
+        self.a.procurador_nombre = self.proc_nombre.text().strip()
+        self.a.procurador_colegiado = self.proc_col.text().strip()
         self.a.guardar()
         self.accept()
 
@@ -653,9 +662,20 @@ class Ventana(QMainWindow):
             QMessageBox.warning(self, APP_NOMBRE, "Este escrito no tiene número de procedimiento.")
             return
         archivos = [Path(e.carpeta) / n for n in ([e.principal] if e.principal else []) + e.anexos]
+        ficha = None
+        if portal.ruta_para(e.tipo_escrito) == "Personacion/Contestacion":
+            from .presentacion import preparar
+            ficha = preparar(e, self.ajustes)
+            if ficha.avisos:
+                r = QMessageBox.question(
+                    self, APP_NOMBRE, "Antes de ir al portal:\n\n• " + "\n• ".join(ficha.avisos) +
+                    "\n\n¿Sigo de todas formas? Lo que falte lo completas tú en el portal.")
+                if r != QMessageBox.Yes:
+                    return
         if self.sesion_portal is None:
             self.sesion_portal = portal.SesionPortal(lambda n, t: self._senales.portal.emit(n, t))
-        self.sesion_portal.presentar(portal.Trabajo(e.tipo_escrito, m.group(1), m.group(2), archivos))
+        self.sesion_portal.presentar(portal.Trabajo(e.tipo_escrito, m.group(1), m.group(2), archivos,
+                                                    Path(e.carpeta), ficha))
 
     def _aviso_portal(self, nivel: str, texto: str):
         colores = {"info": ("#1e3a8a", "#eff6ff", "#bfdbfe"), "login": ("#92400e", "#fffbeb", "#fcd34d"),

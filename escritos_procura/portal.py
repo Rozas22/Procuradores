@@ -11,6 +11,7 @@ usar los objetos en el mismo hilo que los creó).
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -42,6 +43,8 @@ class Trabajo:
     numero: str
     anio: str
     archivos: list[Path]
+    carpeta: Path | None = None
+    ficha: object | None = None      # presentacion.FichaPortal
 
 
 class SesionPortal:
@@ -58,6 +61,7 @@ class SesionPortal:
         self._hay = threading.Event()
         self._parar = False
         self._hilo: threading.Thread | None = None
+        self._carpeta_actual: Path | None = None
 
     # --- API para la ventana ------------------------------------------------
     def presentar(self, t: Trabajo):
@@ -90,6 +94,9 @@ class SesionPortal:
                 ctx = pw.chromium.launch_persistent_context(str(perfil), **opciones)
                 ctx.set_default_timeout(20_000)
                 pagina = ctx.pages[0] if ctx.pages else ctx.new_page()
+                for pg in ctx.pages:
+                    pg.on("download", self._descarga)
+                ctx.on("page", lambda pg: pg.on("download", self._descarga))
                 while not self._parar:
                     self._hay.wait()
                     self._hay.clear()
@@ -111,6 +118,27 @@ class SesionPortal:
             if "msedge" in msg.lower() or "executable" in msg.lower():
                 msg = "No encuentro Microsoft Edge en este ordenador."
             self.avisar("error", f"No se ha podido abrir el navegador: {msg}")
+
+    def _descarga(self, d):
+        """Lo que se descarga del portal va a la carpeta del procedimiento.
+        El resguardo se guarda como «RESGUARDO dd-mm-aa.pdf»."""
+        try:
+            import datetime as dt
+            carpeta = self._carpeta_actual or Path.home() / "Downloads"
+            nombre = d.suggested_filename or "descarga.pdf"
+            if re.search(r"(?i)resguardo|justificante|acuse|recibo|receipt", nombre):
+                base = f"RESGUARDO {dt.date.today():%d-%m-%y}"
+                destino = carpeta / f"{base}.pdf"
+                i = 2
+                while destino.exists():
+                    destino = carpeta / f"{base} ({i}).pdf"
+                    i += 1
+            else:
+                destino = carpeta / nombre
+            d.save_as(str(destino))
+            self.avisar("listo", f"Guardado {destino.name} en la carpeta {carpeta.name}.")
+        except Exception as ex:
+            self.avisar("error", f"No he podido guardar la descarga: {ex}")
 
     @staticmethod
     def en_inicio(pagina) -> bool:
@@ -151,7 +179,21 @@ class SesionPortal:
             pass
         self._esperar_login(pagina)
         self.avisar("info", "Sesión iniciada. Buscando el procedimiento…")
+        self._carpeta_actual = t.carpeta
         ruta = ruta_para(t.tipo_escrito)
+        if ruta == "Personacion/Contestacion" and t.ficha is not None:
+            from .portal_psp import Formulario
+            self._menu(pagina, ruta)
+            pagina.wait_for_load_state("domcontentloaded")
+            form = Formulario(pagina, self.avisar)
+            form.contestacion(t.ficha)
+            texto = "He rellenado: " + ", ".join(form.hecho) + "." if form.hecho else "No he podido rellenar nada."
+            if form.pendiente:
+                texto += "\nTe falta a ti: " + "; ".join(form.pendiente) + "."
+            texto += ("\nRevisa todo y pulsa Enviar tú. Al descargar el resguardo, lo guardo en la carpeta "
+                      "como «RESGUARDO dd-mm-aa».")
+            self.avisar("listo" if not form.pendiente else "login", texto)
+            return
         if ruta == "buscar":
             self._buscar(pagina, t.numero, t.anio)
             self.avisar("listo", f"He buscado el procedimiento {t.numero}/{t.anio}. "

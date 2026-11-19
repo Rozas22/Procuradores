@@ -33,6 +33,8 @@ class Ajustes:
     portal_url: str = PORTALES["Justizia.eus (País Vasco)"]
     escribir_ficha: bool = True
     revisar_siempre: bool = False
+    procurador_nombre: str = ""
+    procurador_colegiado: str = ""
 
     @property
     def configurado(self) -> bool:
