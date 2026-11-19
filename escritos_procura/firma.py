@@ -97,16 +97,9 @@ def posicion_firma(ruta_pdf: Path) -> tuple[int, tuple[float, float, float, floa
     return n, (ancho - 260, 60, ancho - 60, 110), False
 
 
-def nombre_firmado(ruta: Path) -> Path:
-    destino = ruta.with_name(f"{ruta.stem} firmado.pdf")
-    i = 2
-    while destino.exists():
-        destino = ruta.with_name(f"{ruta.stem} firmado ({i}).pdf")
-        i += 1
-    return destino
-
-
-def configuracion(pagina: int, rect) -> str:
+def configuracion(pagina: int, rect, separador: str = "\n") -> str:
+    """Propiedades de AutoFirma para la firma visible. Según la versión, AutoFirma
+    separa las propiedades con un salto de línea real o con el texto «\\n»."""
     x0, y0, x1, y1 = (int(round(v)) for v in rect)
     props = {
         "signaturePage": pagina,
@@ -120,30 +113,81 @@ def configuracion(pagina: int, rect) -> str:
         "layer2FontColor": "black",
         "alwaysCreateRevision": "true",
     }
-    return "\n".join(f"{k}={v}" for k, v in props.items())
+    return separador.join(f"{k}={v}" for k, v in props.items())
+
+
+def firmas(ruta_pdf: Path) -> list[dict]:
+    """Firmas del PDF: nombre del campo, página, ¿visible?, ¿tiene valor (firmada)?"""
+    from pypdf import PdfReader
+    r = PdfReader(str(ruta_pdf))
+    res = []
+    for n, pagina in enumerate(r.pages, 1):
+        for a in pagina.get("/Annots") or []:
+            a = a.get_object()
+            campo = a.get("/Parent").get_object() if a.get("/Parent") else a
+            if a.get("/Subtype") != "/Widget" or (campo.get("/FT") or a.get("/FT")) != "/Sig":
+                continue
+            x0, y0, x1, y1 = (float(v) for v in a.get("/Rect", [0, 0, 0, 0]))
+            res.append({"nombre": str(campo.get("/T") or a.get("/T") or ""), "pagina": n,
+                        "visible": (x1 - x0) > 5 and (y1 - y0) > 5,
+                        "firmada": (campo.get("/V") or a.get("/V")) is not None})
+    return res
+
+
+def _copia_seguridad(ruta: Path) -> Path:
+    import datetime as dt
+    from .almacen import carpeta_datos
+    d = carpeta_datos() / "originales_sin_firmar" / dt.datetime.now().strftime("%Y-%m-%d")
+    d.mkdir(parents=True, exist_ok=True)
+    destino = d / ruta.name
+    i = 2
+    while destino.exists():
+        destino = d / f"{ruta.stem} ({i}){ruta.suffix}"
+        i += 1
+    shutil.copy2(ruta, destino)
+    return destino
 
 
 def firmar(ruta_pdf: Path, cert: Certificado | None, autofirma: str | None = None,
            elegir_en_autofirma: bool = False) -> Path:
-    """Firma el PDF y devuelve la ruta del PDF firmado. Lanza RuntimeError si falla."""
-    from .motor import pdf_firmado
+    """Firma el PDF con AutoFirma y SUSTITUYE el original por el firmado, solo si se
+    comprueba que el nuevo lleva una firma más y visible. El original sin firmar se
+    guarda aparte (carpeta de datos de la app) por seguridad. Lanza RuntimeError si falla."""
     exe = autofirma or buscar_autofirma()
     if not exe:
         raise RuntimeError("No encuentro AutoFirma en este ordenador.")
     pagina, rect, _ = posicion_firma(ruta_pdf)
-    destino = nombre_firmado(ruta_pdf)
-    args = [exe, "sign", "-i", str(ruta_pdf), "-o", str(destino), "-format", "pades",
-            "-store", "windows", "-config", configuracion(pagina, rect)]
-    if elegir_en_autofirma or cert is None:
-        args.append("-certgui")
-    else:
-        args += ["-filter", f"subject.contains:{cert.nombre}"]
-    r = subprocess.run(args, capture_output=True, text=True, timeout=300, creationflags=SIN_VENTANA)
-    antes = ruta_pdf.read_bytes().count(b"/ByteRange")
-    if destino.is_file():
-        despues = destino.read_bytes().count(b"/ByteRange")
-        if despues > antes and pdf_firmado(destino.read_bytes()):
-            return destino
-        destino.unlink(missing_ok=True)
-    detalle = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
-    raise RuntimeError(detalle.splitlines()[-1][:300] if detalle else f"AutoFirma terminó con código {r.returncode}")
+    antes = firmas(ruta_pdf)
+    nombres_antes = {f["nombre"] for f in antes}
+    temporal = ruta_pdf.with_name(f"~firmando {ruta_pdf.name}")
+    ultimo_error = ""
+    for separador in ("\n", "\\n"):
+        temporal.unlink(missing_ok=True)
+        args = [exe, "sign", "-i", str(ruta_pdf), "-o", str(temporal), "-format", "pades",
+                "-store", "windows", "-config", configuracion(pagina, rect, separador)]
+        if elegir_en_autofirma or cert is None:
+            args.append("-certgui")
+        else:
+            args += ["-filter", f"subject.contains:{cert.nombre}"]
+        r = subprocess.run(args, capture_output=True, text=True, timeout=300, creationflags=SIN_VENTANA)
+        salida = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
+        if not temporal.is_file():
+            ultimo_error = salida.splitlines()[-1][:300] if salida else f"AutoFirma terminó con código {r.returncode}"
+            break  # no es cosa de la posición: no reintentar
+        try:
+            despues = firmas(temporal)
+        except Exception as ex:
+            ultimo_error = f"el PDF firmado no se puede leer ({ex})"
+            continue
+        nuevas = [f for f in despues if f["firmada"] and f["nombre"] not in nombres_antes]
+        if not nuevas:
+            ultimo_error = "AutoFirma no ha añadido ninguna firma al PDF"
+            continue
+        if not any(f["visible"] for f in nuevas):
+            ultimo_error = "AutoFirma ha firmado, pero la firma no ha quedado visible en el documento"
+            continue
+        _copia_seguridad(ruta_pdf)
+        os.replace(temporal, ruta_pdf)
+        return ruta_pdf
+    temporal.unlink(missing_ok=True)
+    raise RuntimeError(ultimo_error or "no se ha podido firmar")

@@ -713,8 +713,9 @@ class Ventana(QMainWindow):
         quien = cert.nombre if cert else "el certificado que elijas en AutoFirma"
         r = QMessageBox.question(self, APP_NOMBRE,
                                  f"Vas a firmar:\n  {pdf.name}\n\ncon el certificado de:\n  {quien}\n\n"
-                                 f"La firma será visible {donde}. Se guarda una copia firmada en la misma carpeta; "
-                                 "el original no se toca.\n\n¿Firmar?")
+                                 f"La firma será visible {donde}. El PDF firmado sustituye al original en la carpeta "
+                                 "(solo si se comprueba que la firma ha quedado puesta; el original sin firmar se "
+                                 "guarda aparte por seguridad).\n\n¿Firmar?")
         if r != QMessageBox.Yes:
             return
         self._aviso_portal("info", "Firmando con AutoFirma… (si Windows pide la contraseña del certificado, escríbela)")
@@ -732,7 +733,7 @@ class Ventana(QMainWindow):
             self._aviso_portal("error", f"No se ha podido firmar: {error}\nPuedes firmarlo en Adobe como siempre; "
                                         "la app lo detectará igual.")
             return
-        self._aviso_portal("listo", f"Firmado. Guardado como «{Path(ruta).name}». Ya puedes presentarlo.")
+        self._aviso_portal("listo", f"Firmado: «{Path(ruta).name}» ya lleva tu firma visible. Ya puedes presentarlo.")
         self.refrescar(avisar=False)
         self.recargar()
 

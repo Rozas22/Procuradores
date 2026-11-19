@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from escritos_procura.firma import configuracion, nombre_firmado
+from escritos_procura.firma import configuracion, firmas
 
 
 def test_configuracion():
@@ -11,8 +11,5 @@ def test_configuracion():
     assert "alwaysCreateRevision=true" in c
 
 
-def test_nombre(tmp_path):
-    p = tmp_path / "escrito.pdf"
-    assert nombre_firmado(p).name == "escrito firmado.pdf"
-    (tmp_path / "escrito firmado.pdf").write_bytes(b"x")
-    assert nombre_firmado(p).name == "escrito firmado (2).pdf"
+def test_separador():
+    assert "\\n" in configuracion(1, (0, 0, 10, 10), "\\n") and "\n" not in configuracion(1, (0, 0, 10, 10), "\\n")
