@@ -1,6 +1,8 @@
 ; Instalador de Windows (Inno Setup 6). Se instala para el usuario actual, sin pedir permisos de administrador.
 #define AppName "Escritos Procura"
-#define AppVersion "0.1.0"
+#ifndef AppVersion
+  #define AppVersion "0.0.0"
+#endif
 
 [Setup]
 AppId={{6C1E2B0A-6E4D-4E43-9A57-5E1C3A9D2F11}
@@ -18,6 +20,10 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 DisableProgramGroupPage=yes
+CloseApplications=yes
+RestartApplications=no
+UsePreviousAppDir=yes
+DisableDirPage=auto
 
 [Languages]
 Name: "es"; MessagesFile: "compiler:Languages\Spanish.isl"
@@ -33,4 +39,4 @@ Name: "{userprograms}\{#AppName}"; Filename: "{app}\EscritosProcura.exe"
 Name: "{userdesktop}\{#AppName}"; Filename: "{app}\EscritosProcura.exe"; Tasks: escritorio
 
 [Run]
-Filename: "{app}\EscritosProcura.exe"; Description: "Abrir {#AppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\EscritosProcura.exe"; Description: "Abrir {#AppName}"; Flags: nowait postinstall

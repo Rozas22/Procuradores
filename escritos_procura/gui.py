@@ -5,18 +5,19 @@ import datetime as dt
 import struct
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
-from PySide6.QtCore import QMimeData, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QGuiApplication, QIcon
+from PySide6.QtCore import QMimeData, QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QGuiApplication, QIcon, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QMainWindow, QMessageBox, QPushButton, QSizePolicy, QSplitter,
+    QLineEdit, QMainWindow, QMessageBox, QProgressDialog, QPushButton, QSizePolicy, QSplitter,
     QTableWidget, QTableWidgetItem, QToolBar, QVBoxLayout, QWidget,
 )
 
-from . import __version__
+from . import __version__, actualizador
 from .almacen import APP_NOMBRE, ESTADOS, PORTALES, Ajustes, Almacen, Escrito
 from .motor import (FORMATOS_CARPETA, TIPOS_ESCRITO, Datos, Entrada, analizar,
                     leer_archivos, nombre_carpeta)
@@ -29,7 +30,17 @@ COLOR_ESTADO = {
 }
 
 ESTILO = """
+QWidget { color: #111827; }
 QMainWindow, QDialog { background: #f6f7f9; }
+QToolBar { background: #ffffff; border-bottom: 1px solid #e5e7eb; spacing: 4px; padding: 2px; }
+QToolBar QToolButton { color: #111827; padding: 4px 8px; border-radius: 4px; }
+QToolBar QToolButton:hover { background: #f3f4f6; }
+QToolBar QToolButton#actualizar { background: #16a34a; color: white; font-weight: 600; }
+QLineEdit, QComboBox { background: #ffffff; color: #111827; border: 1px solid #d1d5db; border-radius: 6px; padding: 4px 6px; }
+QComboBox QAbstractItemView { background: #ffffff; color: #111827; selection-background-color: #dbeafe; selection-color: #111827; }
+QCheckBox { color: #111827; }
+QStatusBar { color: #374151; }
+QToolTip { background: #111827; color: #ffffff; border: none; padding: 4px; }
 QLabel#titulo { font-size: 20px; font-weight: 600; color: #1f2937; }
 QLabel#sub { color: #6b7280; }
 QFrame#soltar { border: 2px dashed #9ca3af; border-radius: 12px; background: #ffffff; }
@@ -411,6 +422,12 @@ class PanelDetalle(QFrame):
             self.v.recargar()
 
 
+class _Senales(QObject):
+    resultado = Signal(object, bool, str)
+    progreso = Signal(int, int)
+    descargado = Signal(str, str)
+
+
 class Ventana(QMainWindow):
     def __init__(self, almacen: Almacen | None = None):
         super().__init__()
@@ -433,8 +450,21 @@ class Ventana(QMainWindow):
         a_inf.triggered.connect(lambda: QMessageBox.about(
             self, APP_NOMBRE, f"{APP_NOMBRE} {__version__}\n\nTodo se guarda en este ordenador. "
             "La aplicación no envía datos a ningún sitio."))
-        for a in (a_add, a_ref, a_aj, a_inf):
+        a_upd = QAction("Buscar actualizaciones", self)
+        a_upd.triggered.connect(lambda: self.buscar_actualizacion(manual=True))
+        for a in (a_add, a_ref, a_aj, a_upd, a_inf):
             tb.addAction(a)
+        self.a_nueva = QAction("", self)
+        self.a_nueva.setVisible(False)
+        self.a_nueva.triggered.connect(self.instalar_actualizacion)
+        tb.addSeparator()
+        tb.addAction(self.a_nueva)
+        tb.widgetForAction(self.a_nueva).setObjectName("actualizar")
+        self.novedad = None
+        self._senales = _Senales()
+        self._senales.resultado.connect(self._resultado_busqueda)
+        self._senales.progreso.connect(self._progreso_descarga)
+        self._senales.descargado.connect(self._descargado)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -599,16 +629,110 @@ class Ventana(QMainWindow):
             self.recargar()
             self.statusBar().showMessage(f"Estados actualizados ({n} cambios)", 4000)
 
+    # --- actualizaciones ------------------------------------------------------
+    def buscar_actualizacion(self, manual=False):
+        def tarea():
+            try:
+                self._senales.resultado.emit(actualizador.buscar(), manual, "")
+            except Exception as ex:
+                self._senales.resultado.emit(None, manual, str(ex))
+        threading.Thread(target=tarea, daemon=True).start()
+
+    def _resultado_busqueda(self, novedad, manual, error):
+        if novedad:
+            self.novedad = novedad
+            self.a_nueva.setText(f"⬆ Actualizar a la versión {novedad.version}")
+            self.a_nueva.setVisible(True)
+            if manual:
+                self.instalar_actualizacion()
+        elif manual:
+            if error:
+                QMessageBox.information(self, APP_NOMBRE, "No se ha podido comprobar si hay actualizaciones. "
+                                        "Revisa la conexión a internet e inténtalo más tarde.")
+            else:
+                QMessageBox.information(self, APP_NOMBRE, f"Ya tienes la última versión ({__version__}).")
+
+    def instalar_actualizacion(self):
+        n = self.novedad
+        if not n:
+            return
+        notas = f"\n\nNovedades:\n{n.notas.strip()}" if n.notas.strip() else ""
+        r = QMessageBox.question(self, APP_NOMBRE,
+                                 f"Hay una versión nueva ({n.version}). Tienes la {__version__}.{notas}\n\n"
+                                 "¿Actualizar ahora? La app se cerrará y se abrirá sola en un momento. "
+                                 "No se pierde ningún dato.")
+        if r != QMessageBox.Yes:
+            return
+        if not actualizador.puede_instalar():
+            QDesktopServices.openUrl(QUrl(n.url_instalador))
+            return
+        self._dlg = QProgressDialog("Descargando la actualización…", None, 0, 100, self)
+        self._dlg.setWindowTitle(APP_NOMBRE)
+        self._dlg.setWindowModality(Qt.WindowModal)
+        self._dlg.setMinimumDuration(0)
+        self._dlg.show()
+
+        def tarea():
+            try:
+                ruta = actualizador.descargar(n, lambda h, t: self._senales.progreso.emit(h, t))
+                self._senales.descargado.emit(str(ruta), "")
+            except Exception as ex:
+                self._senales.descargado.emit("", str(ex))
+        threading.Thread(target=tarea, daemon=True).start()
+
+    def _progreso_descarga(self, hecho, total):
+        if total:
+            self._dlg.setValue(int(hecho * 100 / total))
+
+    def _descargado(self, ruta, error):
+        self._dlg.close()
+        if error:
+            QMessageBox.warning(self, APP_NOMBRE, f"No se ha podido descargar la actualización:\n{error}")
+            return
+        actualizador.lanzar_instalador(Path(ruta))
+        QApplication.quit()
+
     def abrir_ajustes(self, bienvenida=False) -> bool:
         ok = DialogoAjustes(self.ajustes, self, bienvenida).exec() == QDialog.Accepted
         self.detalle.mostrar(self.detalle.e)
         return ok
 
 
+def paleta_clara() -> QPalette:
+    """Colores fijos claros: así se lee igual aunque Windows esté en modo oscuro."""
+    p = QPalette()
+    texto, fondo, base = QColor("#111827"), QColor("#f6f7f9"), QColor("#ffffff")
+    for grupo in (QPalette.Active, QPalette.Inactive):
+        p.setColor(grupo, QPalette.Window, fondo)
+        p.setColor(grupo, QPalette.WindowText, texto)
+        p.setColor(grupo, QPalette.Base, base)
+        p.setColor(grupo, QPalette.AlternateBase, QColor("#f9fafb"))
+        p.setColor(grupo, QPalette.Text, texto)
+        p.setColor(grupo, QPalette.Button, base)
+        p.setColor(grupo, QPalette.ButtonText, texto)
+        p.setColor(grupo, QPalette.ToolTipBase, texto)
+        p.setColor(grupo, QPalette.ToolTipText, base)
+        p.setColor(grupo, QPalette.PlaceholderText, QColor("#9ca3af"))
+        p.setColor(grupo, QPalette.Highlight, QColor("#2563eb"))
+        p.setColor(grupo, QPalette.HighlightedText, base)
+        p.setColor(grupo, QPalette.Link, QColor("#2563eb"))
+    for rol in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+        p.setColor(QPalette.Disabled, rol, QColor("#9ca3af"))
+    p.setColor(QPalette.Disabled, QPalette.Window, fondo)
+    p.setColor(QPalette.Disabled, QPalette.Base, QColor("#f3f4f6"))
+    p.setColor(QPalette.Disabled, QPalette.Button, QColor("#f3f4f6"))
+    return p
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NOMBRE)
+    try:
+        app.styleHints().setColorScheme(Qt.ColorScheme.Light)
+    except AttributeError:
+        pass
     app.setStyle("Fusion")
+    app.setPalette(paleta_clara())
     app.setStyleSheet(ESTILO)
     icono = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent)) / "recursos" / "icono.ico"
     if icono.exists():
@@ -617,6 +741,7 @@ def main():
     v.show()
     if not v.ajustes.configurado:
         QTimer.singleShot(200, lambda: v.abrir_ajustes(bienvenida=True))
+    QTimer.singleShot(3000, v.buscar_actualizacion)
     for arg in sys.argv[1:]:
         if Path(arg).is_file():
             QTimer.singleShot(400, lambda a=arg: v.procesar([Path(a)]))
