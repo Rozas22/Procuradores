@@ -1,0 +1,22 @@
+name: Instalador de Windows
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  construir:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pyinstaller==6.16.0 pytest
+      - run: python -m pytest -q tests
+      - run: pyinstaller --noconfirm EscritosProcura.spec
+      - run: choco install innosetup -y --no-progress
+      - run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" instalador.iss'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EscritosProcura-Instalador
+          path: dist/EscritosProcura-Instalador-*.exe
