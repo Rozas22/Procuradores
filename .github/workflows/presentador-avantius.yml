@@ -1,0 +1,34 @@
+name: Presentador Avantius (pruebas)
+on:
+  push:
+    paths: ["presentador-avantius/**", ".github/workflows/presentador-avantius.yml"]
+  pull_request:
+    paths: ["presentador-avantius/**", ".github/workflows/presentador-avantius.yml"]
+  workflow_dispatch:
+jobs:
+  pruebas:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: presentador-avantius
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      # Incluye la prueba con el almacén real de certificados de Windows
+      # (crea un certificado de prueba temporal en CurrentUser\My y lo borra al acabar).
+      - run: python -m pytest -v tests
+        env:
+          PRUEBA_ALMACEN_WINDOWS: "1"
+      - name: Ejemplo de principio a fin
+        run: |
+          python -m presentador ejemplo
+          python -m presentador extraer ejemplo/escrito_ejemplo.pdf
+          python -m presentador firmar ejemplo/escrito_ejemplo.pdf --pfx ejemplo/certificado_prueba.pfx --clave 1234
+          python -m presentador comprobar "ejemplo/escrito_ejemplo firmado.pdf"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: escrito-ejemplo-firmado
+          path: presentador-avantius/ejemplo/*.pdf
