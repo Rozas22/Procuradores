@@ -175,6 +175,9 @@ def _powershell(script: str, entrada: str = "", entorno: dict | None = None, tim
     if sys.platform != "win32":
         raise RuntimeError("El almacén de certificados de Windows solo está disponible en Windows.")
     env = dict(os.environ, **(entorno or {}))
+    # Si la app se lanza desde PowerShell 7, PSModulePath apunta a sus módulos y Windows
+    # PowerShell 5.1 no carga los suyos (Cert:, PKI). Sin la variable usa los de serie.
+    env.pop("PSModulePath", None)
     r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
                        input=entrada, capture_output=True, text=True, timeout=timeout, env=env,
                        creationflags=SIN_VENTANA)

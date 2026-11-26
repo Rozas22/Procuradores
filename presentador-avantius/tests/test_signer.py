@@ -140,18 +140,20 @@ def test_huella_invalida():
                     reason="solo en Windows con PRUEBA_ALMACEN_WINDOWS=1 (crea y borra un certificado de prueba)")
 def test_almacen_windows_real(pdf_ejemplo, tmp_path):
     from presentador.signer import listar_certificados_windows
-    ps = ("$c = New-SelfSignedCertificate -Subject 'CN=PRUEBA PRESENTADOR AVANTIUS' -CertStoreLocation "
+    entorno = {k: v for k, v in os.environ.items() if k != "PSModulePath"}  # ver signer._powershell
+    ps = ("$ErrorActionPreference='Stop'; $c = New-SelfSignedCertificate -Subject 'CN=PRUEBA PRESENTADOR AVANTIUS' -CertStoreLocation "
           "Cert:\\CurrentUser\\My -KeyAlgorithm RSA -KeyLength 2048 -KeyExportPolicy NonExportable "
           "-KeyUsage DigitalSignature,NonRepudiation -NotAfter (Get-Date).AddDays(2); $c.Thumbprint")
-    huella = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
-                            check=True).stdout.strip().splitlines()[-1]
+    r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, env=entorno)
+    assert r.returncode == 0 and r.stdout.strip(), f"No se pudo crear el certificado de prueba: {r.stderr}"
+    huella = r.stdout.strip().splitlines()[-1]
     try:
         assert huella in [c.huella for c in listar_certificados_windows()]
         r = firmar_pdf(pdf_ejemplo, tmp_path / "w.pdf", FirmanteWindows(huella))
         assert r.firmante == "PRUEBA PRESENTADOR AVANTIUS" and comprobar_firma(r.ruta)[0]["intacta"]
     finally:
         subprocess.run(["powershell", "-NoProfile", "-Command",
-                        f"Remove-Item -LiteralPath Cert:\\CurrentUser\\My\\{huella}"], check=False)
+                        f"Remove-Item -LiteralPath Cert:\\CurrentUser\\My\\{huella}"], check=False, env=entorno)
 
 
 def test_detecta_pdf_manipulado(pdf_ejemplo, pfx, tmp_path):
