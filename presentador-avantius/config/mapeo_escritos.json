@@ -1,0 +1,9 @@
+{
+  "por_defecto": "Escrito de trámite",
+  "reglas": [
+    {
+      "contiene": ["PROPOSICION DE PRUEBA"],
+      "tipo_escrito": "Petición de diligencia de prueba"
+    }
+  ]
+}
