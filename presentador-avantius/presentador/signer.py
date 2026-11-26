@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import os
 import re
 import subprocess
@@ -175,10 +174,7 @@ def _powershell(script: str, entrada: str = "", entorno: dict | None = None, tim
     if sys.platform != "win32":
         raise RuntimeError("El almacén de certificados de Windows solo está disponible en Windows.")
     env = dict(os.environ, **(entorno or {}))
-    # Si la app se lanza desde PowerShell 7, PSModulePath apunta a sus módulos y Windows
-    # PowerShell 5.1 no carga los suyos (Cert:, PKI). Sin la variable usa los de serie.
-    env.pop("PSModulePath", None)
-    r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+    r =subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
                        input=entrada, capture_output=True, text=True, timeout=timeout, env=env,
                        creationflags=SIN_VENTANA)
     if r.returncode != 0:
@@ -187,31 +183,43 @@ def _powershell(script: str, entrada: str = "", entorno: dict | None = None, tim
     return (r.stdout or "").strip()
 
 
-_PS_LISTAR = (
+# Los scripts usan solo .NET (X509Store): ni la unidad Cert: ni cmdlets de módulos, que
+# fallan cuando PowerShell 5.1 hereda la ruta de módulos de PowerShell 7.
+_X509 = "System.Security.Cryptography.X509Certificates"
+_PS_ABRIR = (
     "$ErrorActionPreference='Stop';"
-    "@(Get-ChildItem Cert:\\CurrentUser\\My | Where-Object { $_.HasPrivateKey -and $_.NotAfter -gt (Get-Date) } | "
-    "ForEach-Object { [PSCustomObject]@{ nombre=$_.GetNameInfo('SimpleName',$false); "
-    "emisor=$_.GetNameInfo('SimpleName',$true); caduca=$_.NotAfter.ToString('dd/MM/yyyy'); huella=$_.Thumbprint } })"
-    " | ConvertTo-Json -Compress"
+    f"$s = New-Object {_X509}.X509Store('My','CurrentUser'); $s.Open('ReadOnly');"
+)
+_PS_BUSCAR = (
+    _PS_ABRIR
+    + "$c = $null; foreach ($x in $s.Certificates) { if ($x.Thumbprint -eq $env:HUELLA) { $c = $x } };"
+    "if ($c -eq $null) { throw 'No encuentro ese certificado en el almacen personal de Windows.' };"
+)
+_PS_LISTAR = (
+    _PS_ABRIR
+    + "$ahora = [DateTime]::Now;"
+    "foreach ($c in $s.Certificates) { if ($c.HasPrivateKey -and $c.NotAfter -gt $ahora) {"
+    "  $n = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($c.GetNameInfo('SimpleName',$false)));"
+    "  $e = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($c.GetNameInfo('SimpleName',$true)));"
+    "  [Console]::Out.WriteLine($n + ';' + $e + ';' + $c.NotAfter.ToString('dd/MM/yyyy') + ';' + $c.Thumbprint) } }"
 )
 
 
 def listar_certificados_windows() -> list[CertificadoWindows]:
     """Certificados personales de Windows vigentes y con clave privada."""
-    salida = _powershell(_PS_LISTAR, timeout=30)
-    if not salida:
-        return []
-    datos = json.loads(salida)
-    if isinstance(datos, dict):
-        datos = [datos]
-    return [CertificadoWindows(d.get("nombre") or "", d.get("emisor") or "", d.get("caduca") or "",
-                               d.get("huella") or "") for d in datos]
+    res = []
+    for linea in _powershell(_PS_LISTAR, timeout=30).splitlines():
+        partes = linea.strip().split(";")
+        if len(partes) != 4:
+            continue
+        nombre, emisor = (base64.b64decode(x).decode("utf-8") for x in partes[:2])
+        res.append(CertificadoWindows(nombre, emisor, partes[2], partes[3]))
+    return res
 
 
 _PS_CADENA = (
-    "$ErrorActionPreference='Stop';"
-    "$c = Get-Item -LiteralPath ('Cert:\\CurrentUser\\My\\' + $env:HUELLA);"
-    "$ch = New-Object System.Security.Cryptography.X509Certificates.X509Chain;"
+    _PS_BUSCAR
+    + "$ch = New-Object System.Security.Cryptography.X509Certificates.X509Chain;"
     "$ch.ChainPolicy.RevocationMode = 'NoCheck'; [void]$ch.Build($c);"
     "$lista = @([Convert]::ToBase64String($c.RawData));"
     "foreach ($e in $ch.ChainElements) { if ($e.Certificate.Thumbprint -ne $c.Thumbprint) "
@@ -220,9 +228,8 @@ _PS_CADENA = (
 )
 
 _PS_FIRMAR = (
-    "$ErrorActionPreference='Stop';"
-    "$c = Get-Item -LiteralPath ('Cert:\\CurrentUser\\My\\' + $env:HUELLA);"
-    "$datos = [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim());"
+    _PS_BUSCAR
+    + "$datos = [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim());"
     "$h = New-Object System.Security.Cryptography.HashAlgorithmName($env:RESUMEN);"
     "if ($env:ALGORITMO -eq 'rsa') {"
     "  $k = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($c);"

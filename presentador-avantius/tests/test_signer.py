@@ -139,22 +139,28 @@ def test_huella_invalida():
 @pytest.mark.skipif(sys.platform != "win32" or os.environ.get("PRUEBA_ALMACEN_WINDOWS") != "1",
                     reason="solo en Windows con PRUEBA_ALMACEN_WINDOWS=1 (crea y borra un certificado de prueba)")
 def test_almacen_windows_real(pdf_ejemplo, tmp_path):
+    """Importa un certificado de prueba en CurrentUser\\My, lo lista, firma con él y lo borra."""
     from presentador.signer import listar_certificados_windows
-    entorno = {k: v for k, v in os.environ.items() if k != "PSModulePath"}  # ver signer._powershell
-    ps = ("$ErrorActionPreference='Stop'; $c = New-SelfSignedCertificate -Subject 'CN=PRUEBA PRESENTADOR AVANTIUS' -CertStoreLocation "
-          "Cert:\\CurrentUser\\My -KeyAlgorithm RSA -KeyLength 2048 -KeyExportPolicy NonExportable "
-          "-KeyUsage DigitalSignature,NonRepudiation -NotAfter (Get-Date).AddDays(2); $c.Thumbprint")
-    r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, env=entorno)
-    assert r.returncode == 0 and r.stdout.strip(), f"No se pudo crear el certificado de prueba: {r.stderr}"
+    pfx = crear_certificado_prueba(tmp_path / "almacen.pfx", "1234", "PRUEBA PRESENTADOR AVANTIUS")
+    x509 = "System.Security.Cryptography.X509Certificates"
+    importar = (f"$ErrorActionPreference='Stop'; $f = New-Object {x509}.X509Certificate2($env:PFX, '1234', "
+                "'PersistKeySet,UserKeySet'); "
+                f"$s = New-Object {x509}.X509Store('My','CurrentUser'); $s.Open('ReadWrite'); $s.Add($f); "
+                "$s.Close(); [Console]::Out.WriteLine($f.Thumbprint)")
+    r = subprocess.run(["powershell", "-NoProfile", "-Command", importar], capture_output=True, text=True,
+                       env=dict(os.environ, PFX=str(pfx)))
+    assert r.returncode == 0 and r.stdout.strip(), f"No se pudo importar el certificado de prueba: {r.stderr}"
     huella = r.stdout.strip().splitlines()[-1]
     try:
-        assert huella in [c.huella for c in listar_certificados_windows()]
+        certs = {c.huella: c for c in listar_certificados_windows()}
+        assert certs[huella].nombre == "PRUEBA PRESENTADOR AVANTIUS"
         r = firmar_pdf(pdf_ejemplo, tmp_path / "w.pdf", FirmanteWindows(huella))
         assert r.firmante == "PRUEBA PRESENTADOR AVANTIUS" and comprobar_firma(r.ruta)[0]["intacta"]
     finally:
-        subprocess.run(["powershell", "-NoProfile", "-Command",
-                        f"Remove-Item -LiteralPath Cert:\\CurrentUser\\My\\{huella}"], check=False, env=entorno)
-
+        borrar = (f"$s = New-Object {x509}.X509Store('My','CurrentUser'); $s.Open('ReadWrite'); "
+                  f"foreach ($c in @($s.Certificates)) {{ if ($c.Thumbprint -eq '{huella}') {{ $s.Remove($c) }} }}; "
+                  "$s.Close()")
+        subprocess.run(["powershell", "-NoProfile", "-Command", borrar], check=False)
 
 def test_detecta_pdf_manipulado(pdf_ejemplo, pfx, tmp_path):
     r = firmar_pdf(pdf_ejemplo, tmp_path / "f.pdf", firmante_pfx(pfx, "1234"))
